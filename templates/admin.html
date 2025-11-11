@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>میلی بات - پنل مدیریت</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts.css">
     <style>
@@ -26,13 +27,15 @@
         .service-inactive {
             border-right-color: #F59E0B;
         }
+        .service-failed {
+            border-right-color: #EF4444;
+        }
         .log-container {
             height: 300px;
             overflow-y: auto;
-            /* Added standard monospace fonts and ltr direction */
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
             direction: ltr;
-            text-align: left; /* Ensure text aligns left in LTR */
+            text-align: left;
             background-color: #1E293B;
             color: #E2E8F0;
             padding: 0.75rem;
@@ -44,20 +47,16 @@
             white-space: pre-wrap;
             word-break: break-word;
         }
-        .text-xs {
-            font-size: 0.75rem;
+        .status-badge {
+            transition: all 0.3s ease;
         }
-        .text-sm {
-            font-size: 0.8125rem;
+        .pulse {
+            animation: pulse 2s infinite;
         }
-        .text-base {
-            font-size: 0.875rem;
-        }
-        .text-lg {
-            font-size: 0.9375rem;
-        }
-        .text-xl {
-            font-size: 1rem;
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
     </style>
 </head>
@@ -69,9 +68,12 @@
                 <div class="flex items-center">
                     <i class="fas fa-robot text-purple-600 text-lg ml-2"></i>
                     <span class="text-lg font-semibold text-gray-800">پنل مدیریت میلی بات</span>
+                    <span id="connectionStatus" class="ml-3 flex items-center text-xs">
+                        <span class="w-2 h-2 bg-green-500 rounded-full mr-1 pulse"></span>
+                        <span class="text-green-600">متصل</span>
+                    </span>
                 </div>
                 <div class="flex items-center space-x-4 space-x-reverse">
-
                     <a href="{{ url_for('logout') }}"
                        class="text-gray-600 hover:text-purple-600 px-3 py-2 rounded-md text-xs font-medium">
                         <i class="fas fa-sign-out-alt ml-1"></i> خروج
@@ -112,11 +114,13 @@
                             <h3 class="text-base leading-6 font-medium text-gray-900">
                                 مدیریت سرویس‌های بات
                             </h3>
-                            
+                            <p class="mt-1 text-xs text-gray-500">
+                                وضعیت سرویس‌ها به صورت زنده به‌روزرسانی می‌شود
+                            </p>
                         </div>
                         <div class="flex space-x-3 space-x-reverse">
-                            <button onclick="refreshPage()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-xs leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
-                                <i class="fas fa-sync-alt ml-2"></i> بروزرسانی
+                            <button onclick="refreshServices()" class="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-xs leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
+                                <i class="fas fa-sync-alt ml-2"></i> بروزرسانی وضعیت
                             </button>
                         </div>
                     </div>
@@ -151,12 +155,14 @@
                                 <option value="">همه وضعیت‌ها</option>
                                 <option value="active">فعال</option>
                                 <option value="inactive">غیرفعال</option>
+                                <option value="failed">خطادار</option>
                             </select>
                         </div>
 
                         <div>
                             <select id="sortOrder" onchange="filterServices()" class="bg-gray-50 border border-gray-300 text-gray-900 text-xs rounded-md focus:ring-purple-500 focus:border-purple-500 block w-full p-1.5">
                                 <option value="alphabetic">مرتب سازی الفبایی</option>
+                                <option value="status">مرتب سازی بر اساس وضعیت</option>
                             </select>
                         </div>
                     </div>
@@ -167,49 +173,67 @@
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="servicesContainer">
                 {% if services %}
                     {% for service in services %}
-                        
-                        <div class="service-card bg-white rounded-lg shadow {{ 'service-active' if service.active == 'active' else 'service-inactive' }}" data-name="{{ service.unit }}" data-status="{{ service.active }}">
+                        <div class="service-card bg-white rounded-lg shadow service-{{ service.active }}" 
+                             data-name="{{ service.unit }}" 
+                             data-status="{{ service.active }}"
+                             id="service-{{ service.unit|replace('.', '-') }}">
                             <div class="p-4">
                                 <div class="flex items-center justify-between mb-2">
-                                    <h3 class="text-sm font-medium text-gray-900 truncate">
+                                    <h3 class="text-sm font-medium text-gray-900 truncate service-name">
                                         {{ service.unit }}
                                     </h3>
-                                    <span class="px-2 py-0.5 text-xs rounded-full {{ 'bg-green-100 text-green-800' if service.active == 'active' else 'bg-yellow-100 text-yellow-800' }}">
-                                        {% if service.active == 'active' %}
-                                        فعال
-                                        {% else %}
-                                        غیرفعال
-                                        {% endif %}
-                                    </span>
+                                    <div class="flex items-center space-x-2 space-x-reverse">
+                                        <span class="status-badge px-2 py-0.5 text-xs rounded-full 
+                                            {% if service.active == 'active' %}bg-green-100 text-green-800
+                                            {% elif service.active == 'inactive' %}bg-yellow-100 text-yellow-800
+                                            {% else %}bg-red-100 text-red-800{% endif %}"
+                                            id="status-{{ service.unit|replace('.', '-') }}">
+                                            {% if service.active == 'active' %}فعال
+                                            {% elif service.active == 'inactive' %}غیرفعال
+                                            {% else %}خطادار{% endif %}
+                                        </span>
+                                        <span class="enabled-badge px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-800"
+                                              id="enabled-{{ service.unit|replace('.', '-') }}">
+                                            فعال شده
+                                        </span>
+                                    </div>
                                 </div>
 
-                                <p class="text-xs text-gray-500 mb-3">
+                                <p class="text-xs text-gray-500 mb-3 service-description">
                                     {{ service.description }}
                                 </p>
 
-                                <div class="flex space-x-2 space-x-reverse">
-                                    <form action="{{ url_for('admin_service_action', service_name=service.unit) }}" method="post" class="flex-1">
-                                        <input type="hidden" name="action" value="restart">
-                                        <button type="submit" class="w-full inline-flex items-center justify-center px-3 py-1.5 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                                            <i class="fas fa-sync-alt ml-2"></i> راه‌اندازی مجدد
-                                        </button>
-                                    </form>
-                                    <form action="{{ url_for('admin_service_action', service_name=service.unit) }}" method="post" class="flex-1">
-                                        <input type="hidden" name="action" value="stop">
-                                        <button type="submit" class="w-full inline-flex items-center justify-center px-3 py-1.5 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
-                                            <i class="fas fa-stop ml-2"></i> توقف
-                                        </button>
-                                    </form>
+                                <div class="grid grid-cols-2 gap-2 mb-2">
+                                    <button onclick="serviceAction('{{ service.unit }}', 'start')" 
+                                            class="inline-flex items-center justify-center px-2 py-1 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                                        <i class="fas fa-play ml-1"></i> شروع
+                                    </button>
+                                    <button onclick="serviceAction('{{ service.unit }}', 'stop')" 
+                                            class="inline-flex items-center justify-center px-2 py-1 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                                        <i class="fas fa-stop ml-1"></i> توقف
+                                    </button>
+                                    <button onclick="serviceAction('{{ service.unit }}', 'restart')" 
+                                            class="inline-flex items-center justify-center px-2 py-1 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                                        <i class="fas fa-sync-alt ml-1"></i> راه‌اندازی مجدد
+                                    </button>
+                                    <button onclick="toggleService('{{ service.unit }}')" 
+                                            class="inline-flex items-center justify-center px-2 py-1 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-yellow-600 hover:bg-yellow-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500">
+                                        <i class="fas fa-toggle-off ml-1"></i> غیرفعال
+                                    </button>
                                 </div>
 
-                                <div class="mt-3">
-                                    <button onclick="showLogs('{{ service.unit }}')" class="w-full inline-flex items-center justify-center px-3 py-1.5 border border-gray-300 shadow-sm text-xs leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
-                                        <i class="fas fa-terminal ml-2"></i> مشاهده لاگ‌ها
+                                <div class="flex space-x-2 space-x-reverse">
+                                    <button onclick="showLogs('{{ service.unit }}')" 
+                                            class="flex-1 inline-flex items-center justify-center px-2 py-1 border border-gray-300 shadow-sm text-xs leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
+                                        <i class="fas fa-terminal ml-1"></i> مشاهده لاگ‌ها
+                                    </button>
+                                    <button onclick="confirmDelete('{{ service.unit }}')" 
+                                            class="flex-1 inline-flex items-center justify-center px-2 py-1 border border-transparent text-xs leading-4 font-medium rounded-md text-white bg-red-700 hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                                        <i class="fas fa-trash ml-1"></i> حذف
                                     </button>
                                 </div>
                             </div>
                         </div>
-                        
                     {% endfor %}
                 {% else %}
                     <div class="col-span-full bg-white rounded-lg shadow p-5 text-center">
@@ -224,13 +248,46 @@
         </div>
     </div>
 
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteModal" class="fixed inset-0 overflow-y-auto hidden z-50">
+        <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
+            <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <div class="inline-block align-bottom bg-white rounded-lg text-right overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+                <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                    <div class="sm:flex sm:items-start">
+                        <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                            <i class="fas fa-exclamation-triangle text-red-600"></i>
+                        </div>
+                        <div class="mt-3 text-center sm:mt-0 sm:mr-4 sm:text-right w-full">
+                            <h3 class="text-lg leading-6 font-medium text-gray-900" id="deleteModalTitle">
+                                حذف سرویس
+                            </h3>
+                            <div class="mt-2">
+                                <p class="text-sm text-gray-500">
+                                    آیا از حذف سرویس "<span id="deleteServiceName"></span>" اطمینان دارید؟ این عمل غیرقابل بازگشت است.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                    <button type="button" onclick="deleteService()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 sm:ml-3 sm:w-auto sm:text-sm">
+                        حذف سرویس
+                    </button>
+                    <button type="button" onclick="hideDeleteModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+                        انصراف
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Logs Modal -->
-    <div id="logsModal" class="fixed inset-0 overflow-y-auto hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+    <div id="logsModal" class="fixed inset-0 overflow-y-auto hidden z-50" aria-labelledby="modal-title" role="dialog" aria-modal="true">
         <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
             <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true" onclick="hideLogs()"></div>
-
             <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-
             <div class="inline-block align-bottom bg-white rounded-lg text-right overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
                 <div class="bg-white px-4 pt-5 pb-4 sm:p-5 sm:pb-4">
                     <div class="sm:flex sm:items-start">
@@ -251,8 +308,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse"> {# Changed flex direction for RTL layout #}
-                    {# Added Download Button #}
+                <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
                     <button type="button" onclick="downloadLogs()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-1.5 bg-purple-600 text-xs font-medium text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 sm:ml-3 sm:w-auto sm:text-sm">
                         <i class="fas fa-download ml-2"></i> دانلود لاگ‌ها
                     </button>
@@ -267,7 +323,192 @@
     <script>
         let eventSource = null;
         let currentService = '';
+        let serviceToDelete = '';
+        let socket = null;
 
+        // Initialize WebSocket connection
+        function initWebSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                console.log('Connected to server');
+                updateConnectionStatus(true);
+            });
+            
+            socket.on('disconnect', function() {
+                console.log('Disconnected from server');
+                updateConnectionStatus(false);
+            });
+            
+            socket.on('service_states_update', function(data) {
+                updateServiceStates(data);
+            });
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connectionStatus');
+            if (connected) {
+                statusElement.innerHTML = '<span class="w-2 h-2 bg-green-500 rounded-full mr-1 pulse"></span><span class="text-green-600">متصل</span>';
+            } else {
+                statusElement.innerHTML = '<span class="w-2 h-2 bg-red-500 rounded-full mr-1"></span><span class="text-red-600">قطع</span>';
+            }
+        }
+
+        function updateServiceStates(states) {
+            for (const [serviceName, state] of Object.entries(states)) {
+                const serviceId = serviceName.replace(/\./g, '-');
+                const statusElement = document.getElementById(`status-${serviceId}`);
+                const enabledElement = document.getElementById(`enabled-${serviceId}`);
+                const cardElement = document.getElementById(`service-${serviceId}`);
+                
+                if (statusElement && enabledElement && cardElement) {
+                    // Update status badge
+                    let statusText = 'نامشخص';
+                    let statusClass = 'bg-gray-100 text-gray-800';
+                    
+                    if (state.active === 'active') {
+                        statusText = 'فعال';
+                        statusClass = 'bg-green-100 text-green-800';
+                    } else if (state.active === 'inactive') {
+                        statusText = 'غیرفعال';
+                        statusClass = 'bg-yellow-100 text-yellow-800';
+                    } else if (state.active === 'failed') {
+                        statusText = 'خطادار';
+                        statusClass = 'bg-red-100 text-red-800';
+                    }
+                    
+                    statusElement.textContent = statusText;
+                    statusElement.className = `status-badge px-2 py-0.5 text-xs rounded-full ${statusClass}`;
+                    
+                    // Update enabled badge
+                    let enabledText = 'فعال شده';
+                    let enabledClass = 'bg-blue-100 text-blue-800';
+                    
+                    if (state.enabled === 'disabled') {
+                        enabledText = 'غیرفعال شده';
+                        enabledClass = 'bg-gray-100 text-gray-800';
+                    }
+                    
+                    enabledElement.textContent = enabledText;
+                    enabledElement.className = `enabled-badge px-2 py-0.5 text-xs rounded-full ${enabledClass}`;
+                    
+                    // Update card border
+                    cardElement.className = cardElement.className.replace(/service-(active|inactive|failed)/g, '');
+                    cardElement.classList.add(`service-${state.active}`);
+                }
+            }
+        }
+
+        async function serviceAction(serviceName, action) {
+            try {
+                const formData = new FormData();
+                formData.append('action', action);
+                
+                const response = await fetch(`/admin/service/${serviceName}`, {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showNotification(result.message, 'success');
+                    // Status will be updated via WebSocket
+                } else {
+                    showNotification(result.message, 'error');
+                }
+            } catch (error) {
+                showNotification('خطا در انجام عملیات', 'error');
+                console.error('Error:', error);
+            }
+        }
+
+        async function toggleService(serviceName) {
+            // First get current enabled status
+            try {
+                const response = await fetch(`/admin/service/${serviceName}/status`);
+                const status = await response.json();
+                
+                const action = status.enabled === 'enabled' ? 'disable' : 'enable';
+                await serviceAction(serviceName, action);
+            } catch (error) {
+                showNotification('خطا در دریافت وضعیت سرویس', 'error');
+            }
+        }
+
+        function confirmDelete(serviceName) {
+            serviceToDelete = serviceName;
+            document.getElementById('deleteServiceName').textContent = serviceName;
+            document.getElementById('deleteModal').classList.remove('hidden');
+        }
+
+        function hideDeleteModal() {
+            document.getElementById('deleteModal').classList.add('hidden');
+            serviceToDelete = '';
+        }
+
+        async function deleteService() {
+            if (!serviceToDelete) return;
+            
+            await serviceAction(serviceToDelete, 'delete');
+            hideDeleteModal();
+            
+            // Remove service card from UI
+            const serviceId = serviceToDelete.replace(/\./g, '-');
+            const cardElement = document.getElementById(`service-${serviceId}`);
+            if (cardElement) {
+                cardElement.remove();
+                updateServiceCount();
+            }
+        }
+
+        function refreshServices() {
+            if (socket) {
+                socket.emit('request_service_update');
+            }
+            showNotification('در حال بروزرسانی وضعیت سرویس‌ها...', 'info');
+        }
+
+        function showNotification(message, type = 'info') {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm z-50 transform transition-all duration-300 ${
+                type === 'success' ? 'bg-green-50 border-green-500' :
+                type === 'error' ? 'bg-red-50 border-red-500' :
+                'bg-blue-50 border-blue-500'
+            } border-r-4 p-4 rounded-lg shadow-lg`;
+            
+            notification.innerHTML = `
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-${
+                            type === 'success' ? 'check-circle text-green-500' :
+                            type === 'error' ? 'exclamation-triangle text-red-500' :
+                            'info-circle text-blue-500'
+                        }"></i>
+                    </div>
+                    <div class="mr-3">
+                        <p class="text-sm font-medium ${
+                            type === 'success' ? 'text-green-800' :
+                            type === 'error' ? 'text-red-800' :
+                            'text-blue-800'
+                        }">${message}</p>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // Remove notification after 5 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
+        }
+
+        // Existing functions (keep them as they are)
         function refreshPage() {
             window.location.reload();
         }
@@ -292,9 +533,8 @@
                 const logContainer = document.getElementById('logContainer');
                 const logLine = document.createElement('div');
                 logLine.className = 'log-line';
-                logLine.textContent = e.data;
+                logLine.textContent = e.data.replace('data: ', '');
                 logContainer.appendChild(logLine);
-                // Auto-scroll to the bottom
                 logContainer.scrollTop = logContainer.scrollHeight;
             };
 
@@ -304,9 +544,8 @@
                 errorLine.className = 'log-line text-red-400';
                 errorLine.textContent = 'خطا: اتصال به سرور لاگ‌ها ناموفق بود.';
                 logContainer.appendChild(errorLine);
-                 // Auto-scroll to the bottom
                 logContainer.scrollTop = logContainer.scrollHeight;
-                if (eventSource) { // Check if eventSource is still valid before closing
+                if (eventSource) {
                     eventSource.close();
                 }
             };
@@ -320,24 +559,22 @@
             }
         }
 
-        // Function to download logs
         function downloadLogs() {
             const logContainer = document.getElementById('logContainer');
             const logs = Array.from(logContainer.children)
                               .map(line => line.textContent)
-                              .join('\n'); // Join lines with newline character
+                              .join('\n');
 
             const blob = new Blob([logs], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
 
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${currentService}_logs_${new Date().toISOString().slice(0, 10)}.txt`; // Filename with service name and date
-            document.body.appendChild(a); // Append to body to make it clickable
-            a.click(); // Trigger download
-
-            document.body.removeChild(a); // Clean up
-            URL.revokeObjectURL(url); // Release the object URL
+            a.download = `${currentService}_logs_${new Date().toISOString().slice(0, 10)}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function filterServices() {
@@ -359,32 +596,38 @@
 
             if (sortOrder === 'alphabetic') {
                 filteredServices.sort((a, b) => a.dataset.name.localeCompare(b.dataset.name, 'fa'));
+            } else if (sortOrder === 'status') {
+                filteredServices.sort((a, b) => {
+                    const statusOrder = { 'active': 1, 'inactive': 2, 'failed': 3 };
+                    return statusOrder[a.dataset.status] - statusOrder[b.dataset.status];
+                });
             }
 
-            // Clear the container
             servicesContainer.innerHTML = '';
-
-            // Append the filtered and sorted services
             filteredServices.forEach(service => servicesContainer.appendChild(service));
+            updateServiceCount();
         }
 
-        // Update service count, time, and date
-        function updateDateTimeAndCount() {
-            const now = new Date();
-            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
-            const dateTimeString = now.toLocaleDateString('fa-IR', options);
-            document.getElementById('currentTime').textContent = dateTimeString;
-
+        function updateServiceCount() {
             const servicesContainer = document.getElementById('servicesContainer');
             const serviceCount = servicesContainer.children.length;
             document.getElementById('serviceCount').textContent = serviceCount;
         }
 
-        // Call updateDateTimeAndCount every second
-        setInterval(updateDateTimeAndCount, 1000);
+        function updateDateTimeAndCount() {
+            const now = new Date();
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+            const dateTimeString = now.toLocaleDateString('fa-IR', options);
+            document.getElementById('currentTime').textContent = dateTimeString;
+            updateServiceCount();
+        }
 
-        // Initial call to set the values when the page loads
-        updateDateTimeAndCount();
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initWebSocket();
+            updateDateTimeAndCount();
+            setInterval(updateDateTimeAndCount, 1000);
+        });
     </script>
 </body>
 </html>
