@@ -71,7 +71,10 @@ echo "🚀 Restarting service..."
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
+# Detect server IP
+SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+
 echo ""
 echo "✅ Milibots Panel updated successfully!"
-echo "🌐 URL: http://$(hostname -I | awk '{print $1}'):${PORT}"
+echo "🌐 URL: http://${SERVER_IP}:${PORT}"
 echo ""
