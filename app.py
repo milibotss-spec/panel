@@ -1,20 +1,23 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, Response
+from flask import Flask, render_template, request, redirect, url_for, session, flash, Response, jsonify
 import os
 import subprocess
 import shlex
 import time
 from dotenv import load_dotenv
+from flask_socketio import SocketIO
+import json
 
 load_dotenv()
 
 app = Flask(__name__)
-
-# ---------------- CONFIG ----------------
 app.secret_key = os.getenv('SECRET_KEY', 'a_default_secret_key_please_change_me')
+socketio = SocketIO(app, cors_allowed_origins="*")
+
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
 
-# ----------------------------------------
+# Store service states for real-time updates
+service_states = {}
 
 def run_cmd(cmd, timeout=10):
     """Run shell command safely with timeout, returning (success, stdout, stderr)."""
@@ -26,18 +29,62 @@ def run_cmd(cmd, timeout=10):
     except Exception as e:
         return False, "", f"Command error: {e}"
 
-# ----------------------------------------------------
-# SYSTEMCTL ACTIONS
-# ----------------------------------------------------
+def get_service_status(service_name):
+    """Get detailed status of a service."""
+    ok, output, err = run_cmd(f"systemctl is-active {shlex.quote(service_name)}")
+    active_status = output.strip() if ok else "unknown"
+    
+    ok, output, err = run_cmd(f"systemctl is-enabled {shlex.quote(service_name)}")
+    enabled_status = output.strip() if ok else "unknown"
+    
+    return active_status, enabled_status
+
+def update_all_service_states():
+    """Update all service states and emit via WebSocket."""
+    services, error = get_running_services()
+    if not error:
+        for service in services:
+            service_name = service['unit']
+            active_status, enabled_status = get_service_status(service_name)
+            service_states[service_name] = {
+                'active': service['active'],
+                'enabled': enabled_status,
+                'description': service['description']
+            }
+        
+        # Emit update to all connected clients
+        socketio.emit('service_states_update', service_states)
+
 def run_systemctl_command(action, service_name):
-    """Perform start/stop/restart/status actions on a systemd service safely."""
-    valid_actions = ['start', 'stop', 'restart', 'status']
+    """Perform start/stop/restart/status/enable/disable/delete actions on a systemd service safely."""
+    valid_actions = ['start', 'stop', 'restart', 'status', 'enable', 'disable', 'delete']
     if action not in valid_actions:
         return False, f"Invalid action: {action}"
 
     service_path = shlex.quote(service_name)
 
     try:
+        # Delete service (remove unit file and disable)
+        if action == 'delete':
+            # Stop service first
+            run_cmd(f"sudo systemctl stop {service_path}")
+            # Disable service
+            run_cmd(f"sudo systemctl disable {service_path}")
+            # Remove service file (assuming standard location)
+            ok, _, _ = run_cmd(f"sudo rm -f /etc/systemd/system/{service_path}")
+            if ok:
+                run_cmd("sudo systemctl daemon-reload")
+                return True, f"Service '{service_name}' deleted successfully."
+            return False, f"Failed to delete service '{service_name}'"
+
+        # Enable/disable service
+        if action in ['enable', 'disable']:
+            ok, out, err = run_cmd(f"sudo systemctl {action} {service_path}")
+            if ok:
+                run_cmd("sudo systemctl daemon-reload")
+                return True, out or f"Service '{service_name}' {action}d successfully."
+            return False, err or out
+
         # Restart = stop + start manually (safer)
         if action == 'restart':
             ok1, _, err1 = run_cmd(f"sudo systemctl stop {service_path}")
@@ -73,10 +120,6 @@ def run_systemctl_command(action, service_name):
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-
-# ----------------------------------------------------
-# SERVICES LIST
-# ----------------------------------------------------
 def get_running_services():
     """Return a list of all .service units with details."""
     ok, output, err = run_cmd("systemctl list-units --type=service --all --no-pager --no-legend")
@@ -99,10 +142,6 @@ def get_running_services():
             })
     return services, None
 
-
-# ----------------------------------------------------
-# LOG STREAMER
-# ----------------------------------------------------
 def stream_service_logs(service_name):
     """Stream live logs for a service using SSE."""
     command = f"sudo journalctl -u {shlex.quote(service_name)} -f -n 50"
@@ -125,16 +164,24 @@ def stream_service_logs(service_name):
     except Exception as e:
         return None, f"Error streaming logs: {e}"
 
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection."""
+    print(f"Client connected: {request.sid}")
+    # Send current service states to newly connected client
+    socketio.emit('service_states_update', service_states)
 
-# ----------------------------------------------------
-# AUTH + ROUTES
-# ----------------------------------------------------
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection."""
+    print(f"Client disconnected: {request.sid}")
+
 @app.route('/')
 def index():
     if session.get('logged_in'):
         return redirect(url_for('admin_dashboard'))
     return redirect(url_for('login'))
-
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -150,14 +197,12 @@ def login():
         flash('❌ Invalid credentials', 'danger')
     return render_template('login.html')
 
-
 @app.route('/logout')
 def logout():
     """Logout the admin."""
     session.pop('logged_in', None)
     flash('👋 You have been logged out.', 'info')
     return redirect(url_for('login'))
-
 
 @app.route('/admin')
 def admin_dashboard():
@@ -170,25 +215,45 @@ def admin_dashboard():
     if error:
         flash(error, 'danger')
         services = []
+    
+    # Update service states for real-time functionality
+    update_all_service_states()
+    
     return render_template('admin.html', services=services)
-
 
 @app.route('/admin/service/<service_name>', methods=['POST'])
 def admin_service_action(service_name):
-    """Perform start/stop/restart/status for a given service."""
+    """Perform start/stop/restart/status/enable/disable/delete for a given service."""
     if not session.get('logged_in'):
-        flash('⚠️ Please log in first.', 'warning')
-        return redirect(url_for('login'))
+        return jsonify({'success': False, 'message': 'Please log in first.'}), 401
 
     action = request.form.get('action')
     if not action:
-        flash('❌ No action specified.', 'danger')
-        return redirect(url_for('admin_dashboard'))
+        return jsonify({'success': False, 'message': 'No action specified.'}), 400
 
     success, message = run_systemctl_command(action, service_name)
-    flash(message, 'success' if success else 'danger')
-    return redirect(url_for('admin_dashboard'))
+    
+    # Update service states after action
+    update_all_service_states()
+    
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({'success': success, 'message': message})
+    else:
+        flash(message, 'success' if success else 'danger')
+        return redirect(url_for('admin_dashboard'))
 
+@app.route('/admin/service/<service_name>/status')
+def admin_service_status(service_name):
+    """Get current status of a service."""
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    active_status, enabled_status = get_service_status(service_name)
+    return jsonify({
+        'service': service_name,
+        'active': active_status,
+        'enabled': enabled_status
+    })
 
 @app.route('/admin/logs/<service_name>')
 def admin_service_logs(service_name):
@@ -204,10 +269,6 @@ def admin_service_logs(service_name):
 
     return Response(generator, mimetype='text/event-stream')
 
-
-# ----------------------------------------------------
-# ENTRY POINT
-# ----------------------------------------------------
 if __name__ == '__main__':
     print("✅ Flask Admin Service Panel running on http://0.0.0.0:7878")
-    app.run(debug=True, host='0.0.0.0', port=7878)
+    socketio.run(app, debug=True, host='0.0.0.0', port=7878, allow_unsafe_werkzeug=True)
