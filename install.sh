@@ -27,22 +27,16 @@ ADMIN_PASSWORD=${ADMIN_PASSWORD:-milibots}
 echo ""
 
 # Remove any old installation
-if [ -d "$APP_DIR" ]; then
-    echo "🧹 Removing old installation..."
-    rm -rf "$APP_DIR"
-fi
+[ -d "$APP_DIR" ] && echo "🧹 Removing old installation..." && rm -rf "$APP_DIR"
 
-# Clone repo (no GitHub auth prompt)
+# Clone repo
 echo "📂 Cloning repository..."
 git clone --depth 1 "$REPO_URL" "$APP_DIR"
 
 cd "$APP_DIR"
 
 # Create virtual environment
-if [ ! -d "venv" ]; then
-    echo "🐍 Creating virtual environment..."
-    $PYTHON_BIN -m venv venv
-fi
+[ ! -d "venv" ] && echo "🐍 Creating virtual environment..." && $PYTHON_BIN -m venv venv
 
 # Install requirements
 echo "📥 Installing Python dependencies..."
@@ -86,8 +80,9 @@ echo "🔄 Enabling and starting service..."
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
-# Detect server IP
-SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+# Detect server IP using ipapi
+echo "🌍 Detecting server IP..."
+SERVER_IP=$(curl -s https://ipapi.co/ip/ || echo "127.0.0.1")
 
 echo ""
 echo "✅ Installation complete!"
@@ -95,4 +90,3 @@ echo "🌐 Your panel is live at: http://${SERVER_IP}:${PANEL_PORT}"
 echo "👤 Username: ${ADMIN_USERNAME}"
 echo "🔑 Password: ${ADMIN_PASSWORD}"
 echo ""
-
