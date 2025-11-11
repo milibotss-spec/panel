@@ -86,9 +86,13 @@ echo "🔄 Enabling and starting service..."
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
+# Detect server IP
+SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+
 echo ""
 echo "✅ Installation complete!"
-echo "🌐 Your panel is live at: http://$(hostname -I | awk '{print $1}'):${PANEL_PORT}"
+echo "🌐 Your panel is live at: http://${SERVER_IP}:${PANEL_PORT}"
 echo "👤 Username: ${ADMIN_USERNAME}"
 echo "🔑 Password: ${ADMIN_PASSWORD}"
 echo ""
+
