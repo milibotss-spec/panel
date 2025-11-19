@@ -12,8 +12,16 @@ sleep 1
 
 # Install system dependencies
 echo "📦 Installing dependencies..."
-apt-get update -y >/dev/null
-apt-get install -y $PYTHON_BIN python3-venv git curl jq >/dev/null
+apt-get update -y >/dev/null || echo "⚠️  apt-get update failed, but continuing..."
+
+# Install packages individually and continue on failure
+for pkg in $PYTHON_BIN python3-venv git curl jq; do
+    if apt-get install -y $pkg >/dev/null 2>&1; then
+        echo "✅ $pkg installed successfully"
+    else
+        echo "⚠️  Failed to install $pkg, but continuing..."
+    fi
+done
 
 # Prompt for configuration
 echo ""
@@ -35,27 +43,61 @@ read -p "🤖 Enter Telegram Bot Token: " TELEGRAM_BOT_TOKEN
 read -p "👤 Enter Your Telegram User ID: " TELEGRAM_USER_ID
 
 # Remove any old installation
-[ -d "$APP_DIR" ] && echo "🧹 Removing old installation..." && rm -rf "$APP_DIR"
+if [ -d "$APP_DIR" ]; then
+    echo "🧹 Removing old installation..."
+    rm -rf "$APP_DIR" || echo "⚠️  Failed to remove old installation, but continuing..."
+fi
 
 # Clone repo
 echo "📂 Cloning repository..."
-git clone --depth 1 "$REPO_URL" "$APP_DIR"
+if git clone --depth 1 "$REPO_URL" "$APP_DIR" 2>/dev/null; then
+    echo "✅ Repository cloned successfully"
+else
+    echo "❌ Failed to clone repository. Exiting."
+    exit 1
+fi
 
 cd "$APP_DIR"
 
 # Create virtual environment
-[ ! -d "venv" ] && echo "🐍 Creating virtual environment..." && $PYTHON_BIN -m venv venv
+if [ ! -d "venv" ]; then
+    echo "🐍 Creating virtual environment..."
+    if $PYTHON_BIN -m venv venv 2>/dev/null; then
+        echo "✅ Virtual environment created"
+    else
+        echo "❌ Failed to create virtual environment. Exiting."
+        exit 1
+    fi
+fi
 
 # Install requirements
 echo "📥 Installing Python dependencies..."
 source venv/bin/activate
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt >/dev/null
+
+# Upgrade pip with error handling
+if pip install --upgrade pip >/dev/null 2>&1; then
+    echo "✅ pip upgraded successfully"
+else
+    echo "⚠️  pip upgrade failed, but continuing..."
+fi
+
+# Install requirements with error handling
+if [ -f "requirements.txt" ]; then
+    if pip install -r requirements.txt >/dev/null 2>&1; then
+        echo "✅ Python dependencies installed"
+    else
+        echo "⚠️  Some Python dependencies failed to install, but continuing..."
+    fi
+else
+    echo "❌ requirements.txt not found. Exiting."
+    exit 1
+fi
+
 deactivate
 
 # Create .env file
 echo "🧾 Generating .env file..."
-cat <<EOF > .env
+if cat <<EOF > .env
 SECRET_KEY=$(openssl rand -hex 16)
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
@@ -63,10 +105,16 @@ PORT=${PANEL_PORT}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TELEGRAM_USER_ID=${TELEGRAM_USER_ID}
 EOF
+then
+    echo "✅ .env file created"
+else
+    echo "❌ Failed to create .env file. Exiting."
+    exit 1
+fi
 
 # Create Telegram notification script
 echo "🔔 Creating SSH login notification script..."
-cat <<EOF > $TELEGRAM_SCRIPT
+if cat <<EOF > $TELEGRAM_SCRIPT
 #!/bin/bash
 
 # Telegram Bot Configuration
@@ -102,9 +150,18 @@ fi
 
 exit 0
 EOF
+then
+    echo "✅ Telegram script created"
+else
+    echo "⚠️  Failed to create Telegram script, but continuing..."
+fi
 
 # Make the script executable
-chmod +x $TELEGRAM_SCRIPT
+if chmod +x $TELEGRAM_SCRIPT 2>/dev/null; then
+    echo "✅ Telegram script made executable"
+else
+    echo "⚠️  Failed to make Telegram script executable, but continuing..."
+fi
 
 # Configure PAM to trigger the script on SSH login
 echo "🔧 Configuring PAM for SSH notifications..."
@@ -113,8 +170,11 @@ if [ ! -f /etc/pam.d/sshd ]; then
 else
     # Check if already configured
     if ! grep -q "ssh-login-notify" /etc/pam.d/sshd; then
-        echo "session optional pam_exec.so /usr/local/bin/ssh-login-notify.sh" >> /etc/pam.d/sshd
-        echo "✅ PAM configured for SSH notifications"
+        if echo "session optional pam_exec.so /usr/local/bin/ssh-login-notify.sh" >> /etc/pam.d/sshd; then
+            echo "✅ PAM configured for SSH notifications"
+        else
+            echo "⚠️  Failed to configure PAM, but continuing..."
+        fi
     else
         echo "ℹ️ PAM already configured for SSH notifications"
     fi
@@ -134,20 +194,20 @@ You will receive this notification whenever someone logs in via SSH."
 TEST_RESULT=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     -d chat_id="${TELEGRAM_USER_ID}" \
     -d text="${TEST_MESSAGE}" \
-    -d parse_mode="Markdown" | jq -r '.ok')
+    -d parse_mode="Markdown" | jq -r '.ok' 2>/dev/null || echo "false")
 
 if [ "$TEST_RESULT" = "true" ]; then
     echo "✅ Telegram test notification sent successfully!"
 else
-    echo "❌ Failed to send Telegram test notification"
-    echo "💡 Please check your Bot Token and User ID"
+    echo "⚠️  Failed to send Telegram test notification, but continuing..."
+    echo "💡 Please check your Bot Token and User ID later"
 fi
 
 # Create systemd service
 SERVICE_PATH="/etc/systemd/system/$SERVICE_NAME"
 
 echo "🧩 Creating systemd service: $SERVICE_NAME"
-cat <<EOF > "$SERVICE_PATH"
+if cat <<EOF > "$SERVICE_PATH"
 [Unit]
 Description=Milibots Panel Service
 After=network.target
@@ -163,26 +223,41 @@ EnvironmentFile=$APP_DIR/.env
 [Install]
 WantedBy=multi-user.target
 EOF
+then
+    echo "✅ Systemd service created"
+else
+    echo "❌ Failed to create systemd service. Exiting."
+    exit 1
+fi
 
 # Reload and start service
 echo "🔄 Enabling and starting service..."
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+if systemctl daemon-reload 2>/dev/null; then
+    echo "✅ Systemd daemon reloaded"
+else
+    echo "⚠️  Failed to reload systemd daemon, but continuing..."
+fi
+
+if systemctl enable --now "$SERVICE_NAME" 2>/dev/null; then
+    echo "✅ Service enabled and started"
+else
+    echo "⚠️  Failed to enable/start service, but continuing..."
+fi
 
 # Wait a moment for service to start
 sleep 3
 
 # Check service status
-SERVICE_STATUS=$(systemctl is-active $SERVICE_NAME)
+SERVICE_STATUS=$(systemctl is-active $SERVICE_NAME 2>/dev/null || echo "inactive")
 if [ "$SERVICE_STATUS" = "active" ]; then
     echo "✅ Service started successfully!"
 else
-    echo "❌ Service failed to start. Check status with: systemctl status $SERVICE_NAME"
+    echo "⚠️  Service may not be running. Check status with: systemctl status $SERVICE_NAME"
 fi
 
 # Detect server IP using ipapi
 echo "🌍 Detecting server IP..."
-SERVER_IP=$(curl -s https://ipapi.co/ip/ || echo "127.0.0.1")
+SERVER_IP=$(curl -s https://ipapi.co/ip/ 2>/dev/null || echo "127.0.0.1")
 
 echo ""
 echo "🎉 Installation complete!"
